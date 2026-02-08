@@ -61,7 +61,7 @@ binds {
 In order for your sidebar to stay consistent and gap free, you want to add the following to your startup scripts
 
 ```kdl
-spawn-at-startup "~/.local/bin/niri-sidebar listen"
+spawn-at-startup "~/.local/bin/niri-sidebar" "listen"
 ```
 
 This will spawn a daemon to listen for window close events and reorder the sidebar if the closed window was part of it.
