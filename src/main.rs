@@ -33,6 +33,8 @@ enum Commands {
     Close,
     /// Generate a default config file if none exists
     Init,
+    /// Run a daemon to listen for window close events
+    Listen,
 }
 
 pub struct Ctx {
@@ -53,12 +55,17 @@ fn main() -> Result<()> {
     lock_path.push("instance.lock");
     let mut lock_file = LockFile::open(&lock_path)?;
 
-    if !lock_file.try_lock()? {
+    // Listener will handle its own locking when it needs to write
+    if !matches!(cli.command, Commands::Listen) && !lock_file.try_lock()? {
         lock_file.lock()?;
     }
-
     let config = config::load_config();
-    let state = state::load_state()?;
+    // Listener will load state on demand
+    let state = if matches!(cli.command, Commands::Listen) {
+        AppState::default()
+    } else {
+        state::load_state()?
+    };
     let socket = niri::connect()?;
 
     let mut ctx = Ctx {
@@ -74,6 +81,7 @@ fn main() -> Result<()> {
         Commands::Reorder => commands::reorder(&mut ctx)?,
         Commands::Close => commands::close(&mut ctx)?,
         Commands::Init => unreachable!(),
+        Commands::Listen => commands::listen(ctx)?,
     }
 
     Ok(())

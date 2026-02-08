@@ -38,11 +38,9 @@ cp target/release/niri-sidebar ~/.local/bin/
 
 ## Niri configuration
 
-Add the following bindings to your niri.kdl config file.
+Add the following bindings to your niri `config.kdl` file.
 
 **Important:** These examples assume you installed the tool to `~/.local/bin`. If you installed it elsewhere, update the paths accordingly.
-
-**Note:** It is highly recommended to replace your default "Close Window" bind with niri-sidebar close. This command checks if the window is in the sidebar first. If it is, it cleanly removes it and reorders the stack. If it's a normal window, it just closes it like normal.
 
 ```kdl
 binds {
@@ -57,12 +55,16 @@ binds {
 
     // Force reorder (useful if something gets misaligned manually)
     Mod+Alt+R { spawn-sh "~/.local/bin/niri-sidebar reorder"; }
-
-    // RECOMMENDED: Replacement Close Bind
-    // Keeps the sidebar gap-free when closing a sidebar window.
-    Mod+Q { spawn-sh "~/.local/bin/niri-sidebar close"; }
 }
 ```
+
+In order for your sidebar to stay consistent and gap free, you want to add the following to your startup scripts
+
+```kdl
+spawn-at-startup "~/.local/bin/niri-sidebar listen"
+```
+
+This will spawn a daemon to listen for window close events and reorder the sidebar if the closed window was part of it.
 
 Some applications enforce a minimum window size that is larger than your sidebar configuration, which can cause windows to overlap or look broken. Add this rule to force them to respect the sidebar size:
 
