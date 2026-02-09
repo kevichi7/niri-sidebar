@@ -39,13 +39,13 @@ fn add_to_sidebar(ctx: &mut Ctx, window: &Window) -> Result<()> {
     }
 
     let set_w = Action::SetWindowWidth {
-        change: SizeChange::SetFixed(ctx.config.sidebar_width),
+        change: SizeChange::SetFixed(ctx.config.geometry.width),
         id: Some(window.id),
     };
     let _ = ctx.socket.send(Request::Action(set_w))?;
 
     let set_h = Action::SetWindowHeight {
-        change: SizeChange::SetFixed(ctx.config.sidebar_height),
+        change: SizeChange::SetFixed(ctx.config.geometry.height),
         id: Some(window.id),
     };
     let _ = ctx.socket.send(Request::Action(set_h))?;

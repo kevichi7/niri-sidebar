@@ -36,13 +36,13 @@ pub fn reorder(ctx: &mut Ctx) -> Result<()> {
         sidebar_windows.reverse();
     }
 
-    let sidebar_w = ctx.config.sidebar_width;
-    let sidebar_h = ctx.config.sidebar_height;
-    let gap = ctx.config.gap;
-    let off_top = ctx.config.offset_top;
-    let off_right = ctx.config.offset_right;
-    let peek = ctx.config.peek;
-    let focus_peek = ctx.config.focus_peek;
+    let sidebar_w = ctx.config.geometry.width;
+    let sidebar_h = ctx.config.geometry.height;
+    let gap = ctx.config.geometry.gap;
+    let off_top = ctx.config.margins.top;
+    let off_right = ctx.config.margins.right;
+    let peek = ctx.config.interaction.peek;
+    let focus_peek = ctx.config.interaction.focus_peek;
 
     let base_x = display_w - sidebar_w - off_right;
     let hidden_x = display_w - peek;

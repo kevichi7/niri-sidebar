@@ -7,11 +7,26 @@ pub const DEFAULT_CONFIG_STR: &str = include_str!("../default_config.toml");
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub sidebar_width: i32,
-    pub sidebar_height: i32,
-    pub offset_top: i32,
-    pub offset_right: i32,
+    pub geometry: Geometry,
+    pub margins: Margins,
+    pub interaction: Interaction,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Geometry {
+    pub width: i32,
+    pub height: i32,
     pub gap: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Margins {
+    pub top: i32,
+    pub right: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Interaction {
     pub peek: i32,
     pub focus_peek: i32,
 }

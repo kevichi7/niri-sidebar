@@ -87,23 +87,27 @@ Run `niri-sidebar init` to generate a `config.toml` file located at `~/.config/n
 ```toml
 # niri-sidebar configuration
 
+[geometry]
 # Width of the sidebar in pixels
-sidebar_width = 400
-
+width = 400
 # Height of the sidebar windows
-sidebar_height = 335
-
-# Space from the top/bottom of the screen
-offset_top = 50
-
-# Space from the right edge of the screen
-offset_right = 10
-
+height = 335
 # Gap between windows in the stack
 gap = 10
 
+[margins]
+# Space from the top/bottom of the screen
+top = 50
+# Space from the right edge of the screen
+right = 10
+
+[interaction]
 # Width of windows when sidebar is hidden in pixels
 peek = 10
+# Width of window when sidebar is hidden but window is focused in pixels
+# set this equal to peek to disable this feature
+# set this equal to sidebar_width + offset_right to make focused windows "unhide"
+focus_peek = 50
 ```
 
 ## Workflow tips
