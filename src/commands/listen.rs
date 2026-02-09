@@ -1,8 +1,8 @@
-use crate::Ctx;
 use crate::commands::reorder;
-use crate::config::Config;
+use crate::config::load_config;
 use crate::niri::connect;
-use crate::state::{AppState, get_cache_dir, load_state, save_state};
+use crate::state::{get_default_cache_dir, load_state, save_state};
+use crate::{Ctx, NiriClient};
 use anyhow::Result;
 use fslock::LockFile;
 use niri_ipc::socket::Socket;
@@ -24,50 +24,125 @@ pub fn listen(mut ctx: Ctx<Socket>) -> Result<()> {
     Ok(())
 }
 
-fn get_ctx() -> Result<(AppState, Config)> {
-    let mut lock_path = get_cache_dir()?;
+fn get_ctx() -> Result<(Ctx<Socket>, LockFile)> {
+    let cache_dir = get_default_cache_dir()?;
+    let mut lock_path = cache_dir.clone();
     lock_path.push("instance.lock");
     let mut lock_file = LockFile::open(&lock_path)?;
     lock_file.lock()?;
 
-    let state = load_state()?;
-    let config = crate::config::load_config();
+    let state = load_state(&cache_dir)?;
+    let config = load_config();
+    let ctx = Ctx {
+        state,
+        config,
+        socket: connect()?,
+        cache_dir,
+    };
 
-    Ok((state, config))
+    Ok((ctx, lock_file))
 }
 
 fn handle_close_event(closed_id: u64) -> Result<()> {
-    let (mut state, config) = get_ctx()?;
+    let (mut ctx, _lock) = get_ctx()?;
+    process_close(&mut ctx, closed_id)
+}
 
-    if let Some(index) = state.windows.iter().position(|(id, _, _)| *id == closed_id) {
+fn handle_focus_change() -> Result<()> {
+    let (mut ctx, _lock) = get_ctx()?;
+    process_focus(&mut ctx)
+}
+
+pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<()> {
+    if let Some(index) = ctx
+        .state
+        .windows
+        .iter()
+        .position(|(id, _, _)| *id == closed_id)
+    {
         println!("Sidebar window {} closed. Reordering...", closed_id);
 
-        state.windows.remove(index);
-        save_state(&state)?;
+        ctx.state.windows.remove(index);
+        save_state(&ctx.state, &ctx.cache_dir)?;
+        dbg!(&ctx.state);
 
-        let action_socket = connect()?;
-        let mut action_ctx = Ctx {
-            state,
-            config,
-            socket: action_socket,
-        };
-
-        if let Err(e) = reorder(&mut action_ctx) {
-            eprintln!("Failed to reorder: {}", e);
-        }
+        reorder(ctx)?;
     }
 
     Ok(())
 }
 
-fn handle_focus_change() -> Result<()> {
-    let (state, config) = get_ctx()?;
-    let mut ctx = Ctx {
-        state,
-        config,
-        socket: connect()?,
-    };
-    reorder(&mut ctx)?;
-
+pub fn process_focus<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
+    reorder(ctx)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::state::AppState;
+    use crate::test_utils::{MockNiri, mock_window};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_process_close_removes_window_and_reorders() {
+        let temp_dir = tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NIRI_SIDEBAR_TEST_DIR", temp_dir.path());
+        }
+
+        let mut state = AppState::default();
+        state.windows.push((100, 500, 500));
+        state.windows.push((200, 500, 500));
+
+        let w100 = mock_window(100, true, true, 1);
+        let w200 = mock_window(200, true, true, 1);
+        let mock = MockNiri::new(vec![w100, w200]);
+
+        let mut ctx = Ctx {
+            state,
+            config: Config::default(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        process_close(&mut ctx, 100).expect("Process close failed");
+
+        // 100 removed
+        assert!(!ctx.state.windows.iter().any(|(id, _, _)| *id == 100));
+        assert_eq!(ctx.state.windows.len(), 1);
+        assert_eq!(ctx.state.windows[0].0, 200);
+        // Reorder should have run (sending actions)
+        assert!(!ctx.socket.sent_actions.is_empty());
+    }
+
+    #[test]
+    fn test_process_close_ignores_unknown_window() {
+        let temp_dir = tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NIRI_SIDEBAR_TEST_DIR", temp_dir.path());
+        }
+
+        let mut state = AppState::default();
+        state.windows.push((100, 500, 500));
+
+        let mock = MockNiri::new(vec![]);
+
+        let mut ctx = Ctx {
+            state,
+            config: Config::default(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        process_close(&mut ctx, 999).expect("Process close failed");
+
+        // State should still have Window 100
+        assert_eq!(ctx.state.windows.len(), 1);
+        assert_eq!(ctx.state.windows[0].0, 100);
+
+        // No reorder actions should have been sent
+        assert!(ctx.socket.sent_actions.is_empty());
+    }
 }

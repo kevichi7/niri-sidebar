@@ -1,21 +1,10 @@
-mod commands;
-mod config;
-mod niri;
-mod state;
-
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use fslock::LockFile;
-
-use crate::config::Config;
-use crate::niri::NiriClient;
-use crate::state::AppState;
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-pub enum Direction {
-    Next,
-    Prev,
-}
+use niri_sidebar::config::load_config;
+use niri_sidebar::state::{get_default_cache_dir, load_state};
+use niri_sidebar::{AppState, Ctx, config, niri::connect};
+use niri_sidebar::{Direction, commands};
 
 #[derive(Parser)]
 #[command(name = "niri-sidebar")]
@@ -48,12 +37,6 @@ enum Commands {
     Listen,
 }
 
-pub struct Ctx<C: NiriClient> {
-    pub state: AppState,
-    pub config: Config,
-    pub socket: C,
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -62,7 +45,8 @@ fn main() -> Result<()> {
         return config::init_config();
     }
 
-    let mut lock_path = state::get_cache_dir()?;
+    let cache_dir = get_default_cache_dir()?;
+    let mut lock_path = cache_dir.clone();
     lock_path.push("instance.lock");
     let mut lock_file = LockFile::open(&lock_path)?;
 
@@ -70,19 +54,20 @@ fn main() -> Result<()> {
     if !matches!(cli.command, Commands::Listen) && !lock_file.try_lock()? {
         lock_file.lock()?;
     }
-    let config = config::load_config();
+    let config = load_config();
     // Listener will load state on demand
     let state = if matches!(cli.command, Commands::Listen) {
         AppState::default()
     } else {
-        state::load_state()?
+        load_state(&cache_dir)?
     };
-    let socket = niri::connect()?;
+    let socket = connect()?;
 
     let mut ctx = Ctx {
         state,
         config,
         socket,
+        cache_dir,
     };
 
     match cli.command {
