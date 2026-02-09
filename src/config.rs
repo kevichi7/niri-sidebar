@@ -13,6 +13,7 @@ pub struct Config {
     pub offset_right: i32,
     pub gap: i32,
     pub peek: i32,
+    pub focus_peek: i32,
 }
 
 impl Default for Config {

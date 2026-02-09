@@ -42,19 +42,25 @@ pub fn reorder(ctx: &mut Ctx) -> Result<()> {
     let off_top = ctx.config.offset_top;
     let off_right = ctx.config.offset_right;
     let peek = ctx.config.peek;
+    let focus_peek = ctx.config.focus_peek;
 
     let base_x = display_w - sidebar_w - off_right;
     let hidden_x = display_w - peek;
-
-    let target_x = if ctx.state.is_hidden {
-        hidden_x
-    } else {
-        base_x
-    };
+    let focus_hidden_x = display_w - focus_peek;
 
     let base_y = display_h - sidebar_h - off_top;
 
     for (idx, window) in sidebar_windows.iter().enumerate() {
+        let target_x = if ctx.state.is_hidden {
+            if window.is_focused {
+                focus_hidden_x
+            } else {
+                hidden_x
+            }
+        } else {
+            base_x
+        };
+
         let stack_offset = idx as i32 * (sidebar_h + gap);
         let target_y = base_y - stack_offset;
 

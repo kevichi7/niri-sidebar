@@ -17,3 +17,8 @@ gap = 10
 
 # Width of windows when sidebar is hidden in pixels
 peek = 10
+
+# Width of window when sidebar is hidden but window is focused in pixels
+# set this equal to peek to disable this feature
+# set this equal to sidebar_width + offset_right to make focused windows "unhide"
+focus_peek = 50
