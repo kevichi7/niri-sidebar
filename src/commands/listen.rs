@@ -1,3 +1,4 @@
+use crate::commands::movefrom::move_to;
 use crate::commands::reorder;
 use crate::config::load_config;
 use crate::niri::connect;
@@ -17,6 +18,7 @@ pub fn listen(mut ctx: Ctx<Socket>) -> Result<()> {
         match event {
             Event::WindowClosed { id } => handle_close_event(id)?,
             Event::WindowFocusChanged { .. } => handle_focus_change()?,
+            Event::WorkspaceActivated { id, focused: true } => handle_workspace_focus(id)?,
             _ => {}
         }
     }
@@ -53,6 +55,11 @@ fn handle_focus_change() -> Result<()> {
     process_focus(&mut ctx)
 }
 
+fn handle_workspace_focus(ws_id: u64) -> Result<()> {
+    let (mut ctx, _lock) = get_ctx()?;
+    process_move(&mut ctx, ws_id)
+}
+
 pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<()> {
     if let Some(index) = ctx
         .state
@@ -74,6 +81,17 @@ pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<
 
 pub fn process_focus<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
     reorder(ctx)?;
+    Ok(())
+}
+
+pub fn process_move<C: NiriClient>(ctx: &mut Ctx<C>, ws_id: u64) -> Result<()> {
+    let windows: Vec<_> = ctx.socket.get_windows()?;
+    let sidebar_windows = windows
+        .iter()
+        .filter(|w| ctx.state.windows.iter().any(|&(id, _, _)| id == w.id))
+        .collect();
+    move_to(ctx, sidebar_windows, ws_id)?;
+
     Ok(())
 }
 
