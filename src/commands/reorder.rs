@@ -3,34 +3,36 @@ use crate::niri::NiriClient;
 use crate::state::save_state;
 use anyhow::Result;
 use niri_ipc::{Action, PositionChange};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
     let (display_w, display_h) = ctx.socket.get_screen_dimensions()?;
     let current_ws = ctx.socket.get_active_workspace()?.id;
     let all_windows = ctx.socket.get_windows()?;
 
-    let sidebar_ids: Vec<u64> = ctx.state.windows.iter().map(|(id, _, _)| *id).collect();
-    let mut sidebar_windows: Vec<_> = all_windows
-        .iter()
-        .filter(|w| {
-            w.is_floating && w.workspace_id == Some(current_ws) && sidebar_ids.contains(&w.id)
-        })
-        .collect();
-
     let active_ids: HashSet<u64> = all_windows.iter().map(|w| w.id).collect();
-
     ctx.state
         .windows
         .retain(|(id, _, _)| active_ids.contains(id));
     save_state(&ctx.state, &ctx.cache_dir)?;
 
+    let sidebar_ids: HashSet<u64> = ctx.state.windows.iter().map(|(id, _, _)| *id).collect();
+    let sidebar_order: HashMap<u64, usize> = ctx
+        .state
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(idx, (id, _, _))| (*id, idx))
+        .collect();
+
+    let mut sidebar_windows: Vec<_> = all_windows
+        .iter()
+        .filter(|w| w.is_floating && w.workspace_id == Some(current_ws) && sidebar_ids.contains(&w.id))
+        .collect();
+
     // Sort by ID for stable ordering
     sidebar_windows.sort_by_key(|w| {
-        sidebar_ids
-            .iter()
-            .position(|id| *id == w.id)
-            .unwrap_or(usize::MAX)
+        sidebar_order.get(&w.id).copied().unwrap_or(usize::MAX)
     });
     if ctx.state.is_flipped {
         sidebar_windows.reverse();
