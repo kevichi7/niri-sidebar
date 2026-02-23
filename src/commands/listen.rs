@@ -1,3 +1,4 @@
+use crate::commands::maximize::restore_sidebar_window_sizes;
 use crate::commands::movefrom::move_to;
 use crate::commands::reorder;
 use crate::commands::togglewindow::add_to_sidebar;
@@ -77,6 +78,10 @@ pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<
         println!("Sidebar window {} closed. Reordering...", closed_id);
 
         ctx.state.windows.remove(index);
+        if ctx.state.maximized_window_id == Some(closed_id) {
+            ctx.state.maximized_window_id = None;
+            restore_sidebar_window_sizes(ctx)?;
+        }
         save_state(&ctx.state, &ctx.cache_dir)?;
         dbg!(&ctx.state);
 

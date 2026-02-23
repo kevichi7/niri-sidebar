@@ -1,3 +1,4 @@
+use crate::commands::maximize::restore_sidebar_window_sizes;
 use crate::config::SidebarPosition;
 use crate::niri::NiriClient;
 use crate::state::save_state;
@@ -71,6 +72,78 @@ fn calculate_coordinates<C: NiriClient>(
     }
 }
 
+fn apply_maximize_sizes(
+    position: SidebarPosition,
+    dims: &mut [WindowTarget],
+    ordered_ids: &[u64],
+    maximized_window_id: Option<u64>,
+    display: (i32, i32),
+    margins: &crate::config::Margins,
+    gap: i32,
+) {
+    let Some(maximized_id) = maximized_window_id else {
+        return;
+    };
+
+    let Some(max_idx) = ordered_ids.iter().position(|id| *id == maximized_id) else {
+        return;
+    };
+
+    let count = dims.len();
+    if count == 0 {
+        return;
+    }
+
+    let gaps_total = gap * (count.saturating_sub(1) as i32);
+
+    match position {
+        SidebarPosition::Left | SidebarPosition::Right => {
+            let available =
+                (display.1 - margins.top - margins.bottom - gaps_total).max(count as i32);
+            if count == 1 {
+                dims[0].height = available;
+                return;
+            }
+
+            let mut max_h = (available * 70) / 100;
+            let mut other_h = ((available - max_h) / ((count - 1) as i32)).max(60);
+            if other_h * ((count - 1) as i32) >= available {
+                other_h = (available / (count as i32)).max(1);
+            }
+            max_h = available - other_h * ((count - 1) as i32);
+            if max_h < other_h {
+                max_h = other_h;
+            }
+
+            for (idx, dim) in dims.iter_mut().enumerate() {
+                dim.height = if idx == max_idx { max_h } else { other_h };
+            }
+        }
+        SidebarPosition::Top | SidebarPosition::Bottom => {
+            let available =
+                (display.0 - margins.left - margins.right - gaps_total).max(count as i32);
+            if count == 1 {
+                dims[0].width = available;
+                return;
+            }
+
+            let mut max_w = (available * 70) / 100;
+            let mut other_w = ((available - max_w) / ((count - 1) as i32)).max(60);
+            if other_w * ((count - 1) as i32) >= available {
+                other_w = (available / (count as i32)).max(1);
+            }
+            max_w = available - other_w * ((count - 1) as i32);
+            if max_w < other_w {
+                max_w = other_w;
+            }
+
+            for (idx, dim) in dims.iter_mut().enumerate() {
+                dim.width = if idx == max_idx { max_w } else { other_w };
+            }
+        }
+    }
+}
+
 pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
     let (display_w, display_h) = ctx.socket.get_screen_dimensions()?;
     let current_ws = ctx.socket.get_active_workspace()?.id;
@@ -88,7 +161,19 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
     let active_ids: HashSet<u64> = all_windows.iter().map(|w| w.id).collect();
 
     ctx.state.windows.retain(|w| active_ids.contains(&w.id));
-    if ctx.state.windows.len() != initial_len {
+    let mut state_changed = ctx.state.windows.len() != initial_len;
+    let mut cleared_maximized = false;
+    if let Some(id) = ctx.state.maximized_window_id
+        && !ctx.state.windows.iter().any(|w| w.id == id)
+    {
+        ctx.state.maximized_window_id = None;
+        state_changed = true;
+        cleared_maximized = true;
+    }
+    if cleared_maximized {
+        restore_sidebar_window_sizes(ctx)?;
+    }
+    if state_changed {
         save_state(&ctx.state, &ctx.cache_dir)?;
     }
 
@@ -105,11 +190,31 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
 
     let position = ctx.config.interaction.position;
     let gap = ctx.config.geometry.gap;
+    let active_maximized_window = if ctx.state.is_hidden {
+        None
+    } else {
+        ctx.state.maximized_window_id
+    };
+    let mut dims: Vec<WindowTarget> = sidebar_windows
+        .iter()
+        .map(|window| resolve_dimensions(window, ctx))
+        .collect();
+    let ordered_ids: Vec<u64> = sidebar_windows.iter().map(|window| window.id).collect();
+
+    apply_maximize_sizes(
+        position,
+        &mut dims,
+        &ordered_ids,
+        active_maximized_window,
+        (display_w, display_h),
+        &ctx.config.margins,
+        gap,
+    );
 
     let mut current_stack_offset = 0;
 
-    for window in sidebar_windows.iter() {
-        let dims = resolve_dimensions(window, ctx);
+    for (index, window) in sidebar_windows.iter().enumerate() {
+        let dims = dims[index];
 
         let active_peek = if window.is_focused {
             resolve_rule_focus_peek(
@@ -136,6 +241,23 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
             }
             SidebarPosition::Top | SidebarPosition::Bottom => {
                 current_stack_offset += dims.width + gap;
+            }
+        }
+
+        if ctx.state.maximized_window_id.is_some() {
+            match position {
+                SidebarPosition::Left | SidebarPosition::Right => {
+                    let _ = ctx.socket.send_action(Action::SetWindowHeight {
+                        change: niri_ipc::SizeChange::SetFixed(dims.height),
+                        id: Some(window.id),
+                    });
+                }
+                SidebarPosition::Top | SidebarPosition::Bottom => {
+                    let _ = ctx.socket.send_action(Action::SetWindowWidth {
+                        change: niri_ipc::SizeChange::SetFixed(dims.width),
+                        id: Some(window.id),
+                    });
+                }
             }
         }
 
@@ -274,6 +396,208 @@ mod tests {
         assert!(actions.iter().any(|a| matches!(a,
             Action::MoveFloatingWindow { id: Some(1), x: PositionChange::SetFixed(x), .. }
             if *x == 1870.0
+        )));
+    }
+
+    #[test]
+    fn test_maximized_window_gets_larger_height() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, false, true, 1, Some((1.0, 2.0)));
+        let w2 = mock_window(2, true, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![w1, w2]);
+
+        let mut state = AppState {
+            maximized_window_id: Some(2),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 2,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        let mut h1 = None;
+        let mut h2 = None;
+        for action in &ctx.socket.sent_actions {
+            if let Action::SetWindowHeight {
+                id: Some(id),
+                change: niri_ipc::SizeChange::SetFixed(h),
+            } = action
+            {
+                if *id == 1 {
+                    h1 = Some(*h);
+                } else if *id == 2 {
+                    h2 = Some(*h);
+                }
+            }
+        }
+
+        let h1 = h1.expect("window 1 should be resized");
+        let h2 = h2.expect("window 2 should be resized");
+        assert!(h2 > h1, "maximized window height should be greater");
+    }
+
+    #[test]
+    fn test_reorder_clears_stale_maximize_and_restores_sizes() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, true, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![w1]);
+
+        let mut state = AppState {
+            maximized_window_id: Some(999),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("reorder failed");
+
+        assert_eq!(ctx.state.maximized_window_id, None);
+        assert!(
+            ctx.socket.sent_actions.iter().any(|a| matches!(
+                a,
+                Action::SetWindowHeight {
+                    id: Some(1),
+                    change: niri_ipc::SizeChange::SetFixed(200)
+                }
+            )),
+            "reorder should restore default size when stale maximize is cleared"
+        );
+    }
+
+    #[test]
+    fn test_hidden_sidebar_without_sidebar_focus_suspends_maximize_sizes() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, false, true, 1, Some((1.0, 2.0)));
+        let w2 = mock_window(2, false, true, 1, Some((1.0, 2.0)));
+        // Focus is outside sidebar while hidden
+        let outside_focused = mock_window(99, true, false, 1, None);
+        let mock = MockNiri::new(vec![w1, w2, outside_focused]);
+
+        let mut state = AppState {
+            is_hidden: true,
+            maximized_window_id: Some(2),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 2,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(1),
+                change: niri_ipc::SizeChange::SetFixed(200)
+            }
+        )));
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(2),
+                change: niri_ipc::SizeChange::SetFixed(200)
+            }
+        )));
+    }
+
+    #[test]
+    fn test_hidden_sidebar_with_sidebar_focus_also_suspends_maximize_sizes() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, true, true, 1, Some((1.0, 2.0)));
+        let w2 = mock_window(2, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![w1, w2]);
+
+        let mut state = AppState {
+            is_hidden: true,
+            maximized_window_id: Some(1),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 2,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(1),
+                change: niri_ipc::SizeChange::SetFixed(200)
+            }
+        )));
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(2),
+                change: niri_ipc::SizeChange::SetFixed(200)
+            }
         )));
     }
 

@@ -1,4 +1,5 @@
 use crate::Ctx;
+use crate::commands::maximize::restore_sidebar_window_sizes;
 use crate::commands::reorder;
 use crate::niri::NiriClient;
 use crate::state::save_state;
@@ -14,6 +15,10 @@ pub fn close<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
 
     if let Some(index) = ctx.state.windows.iter().position(|w| w.id == focused.id) {
         ctx.state.windows.remove(index);
+        if ctx.state.maximized_window_id == Some(focused.id) {
+            ctx.state.maximized_window_id = None;
+            restore_sidebar_window_sizes(ctx)?;
+        }
         save_state(&ctx.state, &ctx.cache_dir)?;
     }
 
@@ -107,6 +112,47 @@ mod tests_close {
                 .sent_actions
                 .iter()
                 .any(|a| matches!(a, Action::CloseWindow { id: Some(99) }))
+        );
+    }
+
+    #[test]
+    fn test_close_maximized_window_restores_other_sidebar_sizes() {
+        let temp_dir = tempdir().unwrap();
+        let focused = mock_window(10, true, true, 1, Some((1.0, 2.0)));
+        let other = mock_window(20, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![focused, other]);
+
+        let mut state = AppState::default();
+        state.windows.push(WindowState {
+            id: 10,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 20,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.maximized_window_id = Some(10);
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        close(&mut ctx).expect("Close failed");
+        assert_eq!(ctx.state.maximized_window_id, None);
+        assert!(
+            ctx.socket
+                .sent_actions
+                .iter()
+                .any(|a| matches!(a, Action::SetWindowHeight { id: Some(20), .. }))
         );
     }
 }

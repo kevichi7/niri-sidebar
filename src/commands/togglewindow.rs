@@ -1,4 +1,5 @@
 use crate::Ctx;
+use crate::commands::maximize::restore_sidebar_window_sizes;
 use crate::commands::reorder;
 use crate::niri::NiriClient;
 use crate::state::{WindowState, save_state};
@@ -70,6 +71,10 @@ fn remove_from_sidebar<C: NiriClient>(ctx: &mut Ctx<C>, window: &Window) -> Resu
 
     let w_state = ctx.state.windows.remove(index);
     ctx.state.ignored_windows.push(w_state.id);
+    if ctx.state.maximized_window_id == Some(w_state.id) {
+        ctx.state.maximized_window_id = None;
+        restore_sidebar_window_sizes(ctx)?;
+    }
 
     let _ = ctx.socket.send_action(Action::SetWindowWidth {
         change: SizeChange::SetFixed(w_state.width),
@@ -363,6 +368,48 @@ mod tests {
             Action::SetWindowHeight {
                 change: SizeChange::SetFixed(800),
                 id: Some(100)
+            }
+        )));
+    }
+
+    #[test]
+    fn test_remove_maximized_window_restores_other_sidebar_sizes() {
+        let temp_dir = tempdir().unwrap();
+        let focused = mock_window(100, true, true, 1, Some((1.0, 2.0)));
+        let other = mock_window(200, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![focused, other]);
+
+        let mut state = AppState::default();
+        state.windows.push(WindowState {
+            id: 100,
+            width: 1000,
+            height: 800,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 200,
+            width: 1000,
+            height: 800,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.maximized_window_id = Some(100);
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        toggle_window(&mut ctx).expect("Command failed");
+        assert_eq!(ctx.state.maximized_window_id, None);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(200),
+                change: SizeChange::SetFixed(200)
             }
         )));
     }

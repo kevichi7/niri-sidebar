@@ -9,6 +9,8 @@ pub struct AppState {
     #[serde(default)]
     pub ignored_windows: Vec<u64>,
     #[serde(default)]
+    pub maximized_window_id: Option<u64>,
+    #[serde(default)]
     pub is_hidden: bool,
     #[serde(default)]
     pub is_flipped: bool,
@@ -78,6 +80,7 @@ mod tests {
         let original_state = AppState {
             windows: vec![w1, w2],
             ignored_windows: vec![100, 200],
+            maximized_window_id: Some(100),
             is_hidden: true,
             is_flipped: true,
         };
