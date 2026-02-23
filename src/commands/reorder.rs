@@ -190,10 +190,13 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
 
     let position = ctx.config.interaction.position;
     let gap = ctx.config.geometry.gap;
-    let active_maximized_window = if ctx.state.is_hidden {
-        None
-    } else {
-        ctx.state.maximized_window_id
+    let focused_sidebar_id = sidebar_windows.iter().find(|w| w.is_focused).map(|w| w.id);
+    let active_maximized_window = match (ctx.state.is_hidden, ctx.state.maximized_window_id) {
+        (false, maximized) => maximized,
+        (true, Some(maximized_id)) if focused_sidebar_id == Some(maximized_id) => {
+            Some(maximized_id)
+        }
+        _ => None,
     };
     let mut dims: Vec<WindowTarget> = sidebar_windows
         .iter()
@@ -210,7 +213,6 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
         &ctx.config.margins,
         gap,
     );
-
     let mut current_stack_offset = 0;
 
     for (index, window) in sidebar_windows.iter().enumerate() {
@@ -550,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hidden_sidebar_with_sidebar_focus_also_suspends_maximize_sizes() {
+    fn test_hidden_sidebar_with_focused_maximized_window_keeps_maximize_sizes() {
         let temp_dir = tempdir().unwrap();
         let w1 = mock_window(1, true, true, 1, Some((1.0, 2.0)));
         let w2 = mock_window(2, false, true, 1, Some((1.0, 2.0)));
@@ -585,20 +587,28 @@ mod tests {
 
         reorder(&mut ctx).expect("Reorder failed");
 
-        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
-            a,
-            Action::SetWindowHeight {
-                id: Some(1),
-                change: niri_ipc::SizeChange::SetFixed(200)
+        let mut h1 = None;
+        let mut h2 = None;
+        for action in &ctx.socket.sent_actions {
+            if let Action::SetWindowHeight {
+                id: Some(id),
+                change: niri_ipc::SizeChange::SetFixed(h),
+            } = action
+            {
+                if *id == 1 {
+                    h1 = Some(*h);
+                } else if *id == 2 {
+                    h2 = Some(*h);
+                }
             }
-        )));
-        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
-            a,
-            Action::SetWindowHeight {
-                id: Some(2),
-                change: niri_ipc::SizeChange::SetFixed(200)
-            }
-        )));
+        }
+
+        let h1 = h1.expect("window 1 should be resized");
+        let h2 = h2.expect("window 2 should be resized");
+        assert!(
+            h1 > h2,
+            "focused maximized window should stay dominant while hidden"
+        );
     }
 
     #[test]

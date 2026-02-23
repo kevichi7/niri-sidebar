@@ -92,7 +92,21 @@ pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<
 }
 
 pub fn process_focus<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
+    if ctx.state.maximize_focus_mode
+        && let Ok(focused) = ctx.socket.get_active_window()
+        && ctx.state.windows.iter().any(|w| w.id == focused.id)
+        && ctx.state.maximized_window_id != Some(focused.id)
+    {
+        ctx.state.maximized_window_id = Some(focused.id);
+        save_state(&ctx.state, &ctx.cache_dir)?;
+    }
+
     reorder(ctx)?;
+    // Some apps (e.g. Telegram) may apply resize asynchronously.
+    // A second reorder pass helps settle stacking coordinates after size changes.
+    if ctx.state.maximized_window_id.is_some() {
+        reorder(ctx)?;
+    }
     Ok(())
 }
 
@@ -291,6 +305,77 @@ mod tests {
 
         check_action(&actions[0], 10);
         check_action(&actions[1], 20);
+    }
+
+    #[test]
+    fn test_process_focus_updates_maximized_when_mode_enabled_and_sidebar_window_focused() {
+        let temp_dir = tempdir().unwrap();
+
+        let focused = mock_window(20, true, true, 1, Some((1.0, 2.0)));
+        let other = mock_window(10, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![focused, other]);
+
+        let mut state = AppState {
+            maximize_focus_mode: true,
+            maximized_window_id: Some(10),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 10,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 20,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: Config::default(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        process_focus(&mut ctx).expect("process_focus failed");
+        assert_eq!(ctx.state.maximized_window_id, Some(20));
+    }
+
+    #[test]
+    fn test_process_focus_does_not_update_maximized_when_focused_window_not_in_sidebar() {
+        let temp_dir = tempdir().unwrap();
+
+        let focused_outside = mock_window(99, true, false, 1, None);
+        let tracked = mock_window(10, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![focused_outside, tracked]);
+
+        let mut state = AppState {
+            maximize_focus_mode: true,
+            maximized_window_id: Some(10),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 10,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: Config::default(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        process_focus(&mut ctx).expect("process_focus failed");
+        assert_eq!(ctx.state.maximized_window_id, Some(10));
     }
 
     #[test]

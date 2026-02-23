@@ -1,32 +1,52 @@
 use crate::niri::NiriClient;
-use crate::state::WindowState;
 use crate::{Ctx, Direction};
 use anyhow::Result;
 use niri_ipc::Action;
 
 pub fn focus<C: NiriClient>(ctx: &mut Ctx<C>, direction: Direction) -> Result<()> {
-    let len = ctx.state.windows.len();
+    let current_ws = ctx.socket.get_active_workspace()?.id;
+    let windows = ctx.socket.get_windows()?;
+    let tracked_ids: Vec<u64> = ctx.state.windows.iter().map(|w| w.id).collect();
+    let mut sidebar_ids: Vec<u64> = windows
+        .iter()
+        .filter(|w| {
+            w.is_floating && w.workspace_id == Some(current_ws) && tracked_ids.contains(&w.id)
+        })
+        .map(|w| w.id)
+        .collect();
+
+    sidebar_ids.sort_by_key(|id| {
+        tracked_ids
+            .iter()
+            .position(|tracked| tracked == id)
+            .unwrap_or(usize::MAX)
+    });
+    if ctx.state.is_flipped {
+        sidebar_ids.reverse();
+    }
+
+    let len = sidebar_ids.len();
 
     if len == 0 {
         return Ok(());
     }
 
     let active_window = ctx.socket.get_active_window()?.id;
-    let current_index_opt = ctx.state.windows.iter().position(|w| w.id == active_window);
+    let current_index_opt = sidebar_ids.iter().position(|id| *id == active_window);
 
     let next_index = if let Some(i) = current_index_opt {
         match direction {
-            Direction::Next => (i + len - 1) % len,
-            Direction::Prev => (i + 1) % len,
+            Direction::Next => (i + 1) % len,
+            Direction::Prev => (i + len - 1) % len,
         }
     } else {
         match direction {
-            Direction::Next => len - 1,
-            Direction::Prev => 0,
+            Direction::Next => 0,
+            Direction::Prev => len - 1,
         }
     };
 
-    if let Some(WindowState { id, .. }) = ctx.state.windows.get(next_index) {
+    if let Some(id) = sidebar_ids.get(next_index) {
         let _ = ctx.socket.send_action(Action::FocusWindow { id: *id });
     }
 
@@ -37,7 +57,7 @@ pub fn focus<C: NiriClient>(ctx: &mut Ctx<C>, direction: Direction) -> Result<()
 mod tests_focus {
     use super::*;
     use crate::Direction;
-    use crate::state::AppState;
+    use crate::state::{AppState, WindowState};
     use crate::test_utils::{MockNiri, mock_config, mock_window};
     use niri_ipc::Action;
     use tempfile::tempdir;
@@ -46,7 +66,7 @@ mod tests_focus {
     fn test_cycle_focus_next() {
         let temp_dir = tempdir().unwrap();
         // Sidebar has [A, B, C]. Focused is B (Index 1).
-        // Next => (i + len - 1) % len => (1 + 3 - 1) % 3 = 0. So focus A
+        // Next => (i + 1) % len => (1 + 1) % 3 = 2. So focus C
 
         let win_a = mock_window(1, false, true, 1, Some((1.0, 2.0)));
         let win_b = mock_window(2, true, true, 1, Some((1.0, 2.0)));
@@ -92,7 +112,7 @@ mod tests_focus {
             ctx.socket
                 .sent_actions
                 .iter()
-                .any(|a| matches!(a, Action::FocusWindow { id: 1 }))
+                .any(|a| matches!(a, Action::FocusWindow { id: 3 }))
         );
     }
 
@@ -100,7 +120,7 @@ mod tests_focus {
     fn test_cycle_focus_prev() {
         let temp_dir = tempdir().unwrap();
         // Sidebar has [A, B, C]. Focused is B (Index 1).
-        // Prev => (i + 1) % len => (1 + 1) % 3 = 2. So focus C
+        // Prev => (i + len - 1) % len => (1 + 3 - 1) % 3 = 0. So focus A
         //
         let win_a = mock_window(1, false, true, 1, Some((1.0, 2.0)));
         let win_b = mock_window(2, true, true, 1, Some((1.0, 2.0)));
@@ -146,7 +166,7 @@ mod tests_focus {
             ctx.socket
                 .sent_actions
                 .iter()
-                .any(|a| matches!(a, Action::FocusWindow { id: 3 }))
+                .any(|a| matches!(a, Action::FocusWindow { id: 1 }))
         );
     }
 
@@ -154,8 +174,8 @@ mod tests_focus {
     fn test_enter_focus_from_outside() {
         let temp_dir = tempdir().unwrap();
         // Focused window is Z (99), not in sidebar.
-        // Next: len - 1 (Last item).
-        // Prev: 0 (First item).
+        // Next: 0 (First item).
+        // Prev: len - 1 (Last item).
 
         let win_a = mock_window(1, false, true, 1, Some((1.0, 2.0)));
         let win_b = mock_window(2, false, true, 1, Some((1.0, 2.0)));
@@ -187,24 +207,24 @@ mod tests_focus {
             cache_dir: temp_dir.path().to_path_buf(),
         };
 
-        // Next (Should focus last item -> B)
+        // Next (Should focus first item -> A)
         focus(&mut ctx, Direction::Next).unwrap();
         assert!(
             ctx.socket
                 .sent_actions
                 .iter()
-                .any(|a| matches!(a, Action::FocusWindow { id: 2 }))
+                .any(|a| matches!(a, Action::FocusWindow { id: 1 }))
         );
 
         ctx.socket.sent_actions.clear();
 
-        // Prev (Should focus first item -> A)
+        // Prev (Should focus last item -> B)
         focus(&mut ctx, Direction::Prev).unwrap();
         assert!(
             ctx.socket
                 .sent_actions
                 .iter()
-                .any(|a| matches!(a, Action::FocusWindow { id: 1 }))
+                .any(|a| matches!(a, Action::FocusWindow { id: 2 }))
         );
     }
 

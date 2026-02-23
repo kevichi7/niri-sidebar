@@ -11,6 +11,8 @@ pub struct AppState {
     #[serde(default)]
     pub maximized_window_id: Option<u64>,
     #[serde(default)]
+    pub maximize_focus_mode: bool,
+    #[serde(default)]
     pub is_hidden: bool,
     #[serde(default)]
     pub is_flipped: bool,
@@ -81,6 +83,7 @@ mod tests {
             windows: vec![w1, w2],
             ignored_windows: vec![100, 200],
             maximized_window_id: Some(100),
+            maximize_focus_mode: true,
             is_hidden: true,
             is_flipped: true,
         };

@@ -33,6 +33,8 @@ enum Commands {
     },
     /// Toggle maximize mode for the focused sidebar window
     Maximize,
+    /// Toggle auto-maximize for focused sidebar windows
+    ToggleMaximizeFocusMode,
     /// Move the sidebar from a specific workspace to the current workspace
     MoveFrom {
         #[arg()]
@@ -85,6 +87,7 @@ fn main() -> Result<()> {
         Commands::Close => commands::close(&mut ctx)?,
         Commands::Focus { direction } => commands::focus(&mut ctx, direction)?,
         Commands::Maximize => commands::maximize(&mut ctx)?,
+        Commands::ToggleMaximizeFocusMode => commands::toggle_maximize_focus_mode(&mut ctx)?,
         Commands::MoveFrom { workspace } => commands::move_from(&mut ctx, workspace)?,
         Commands::Init => unreachable!(),
         Commands::Listen => commands::listen(ctx)?,

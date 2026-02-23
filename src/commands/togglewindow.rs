@@ -35,6 +35,14 @@ pub fn add_to_sidebar<C: NiriClient>(ctx: &mut Ctx<C>, window: &Window) -> Resul
     };
     ctx.state.windows.push(w_state);
 
+    // If maximize is currently active (or focus-maximize mode is enabled),
+    // a newly focused sidebar window should become the maximized one.
+    if window.is_focused
+        && (ctx.state.maximized_window_id.is_some() || ctx.state.maximize_focus_mode)
+    {
+        ctx.state.maximized_window_id = Some(window.id);
+    }
+
     if !window.is_floating {
         let _ = ctx.socket.send_action(Action::ToggleWindowFloating {
             id: Some(window.id),
@@ -412,5 +420,57 @@ mod tests {
                 change: SizeChange::SetFixed(200)
             }
         )));
+    }
+
+    #[test]
+    fn test_add_focused_window_switches_maximized_when_maximize_active() {
+        let temp_dir = tempdir().unwrap();
+        let existing = mock_window(200, false, true, 1, Some((1.0, 2.0)));
+        let focused_new = mock_window(100, true, false, 1, None);
+        let mock = MockNiri::new(vec![focused_new, existing]);
+
+        let mut state = AppState {
+            maximized_window_id: Some(200),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 200,
+            width: 1000,
+            height: 800,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        toggle_window(&mut ctx).expect("Command failed");
+        assert_eq!(ctx.state.maximized_window_id, Some(100));
+    }
+
+    #[test]
+    fn test_add_focused_window_switches_maximized_when_focus_mode_enabled() {
+        let temp_dir = tempdir().unwrap();
+        let focused_new = mock_window(100, true, false, 1, None);
+        let mock = MockNiri::new(vec![focused_new]);
+
+        let state = AppState {
+            maximize_focus_mode: true,
+            ..Default::default()
+        };
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        toggle_window(&mut ctx).expect("Command failed");
+        assert_eq!(ctx.state.maximized_window_id, Some(100));
     }
 }

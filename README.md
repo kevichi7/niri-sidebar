@@ -13,6 +13,7 @@ https://github.com/user-attachments/assets/46f51b18-d85b-4d79-9c44-63e63649707a
 - **Smart Close:** Closing a sidebar window automatically reorders the remaining windows to fill the gap.
 - **Flip & Hide:** Flip the stack to the other side of the screen or hide it completely (peeking mode).
 - **Maximize a Sidebar Window:** Temporarily make one sidebar window take most of the stack space.
+- **Focus-to-Maximize Mode:** Optional mode that auto-maximizes whichever sidebar window you focus.
 - **State Persistence:** Remembers your sidebar windows and their original sizes even if you restart the tool.
 
 ## Installation
@@ -58,6 +59,9 @@ binds {
 
     // Toggle maximize mode for the focused sidebar window
     Mod+Ctrl+M { spawn-sh "~/.local/bin/niri-sidebar maximize"; }
+
+    // Toggle auto-maximize mode for focused sidebar windows
+    Mod+Ctrl+Shift+M { spawn-sh "~/.local/bin/niri-sidebar toggle-maximize-focus-mode"; }
 
     // Force reorder (useful if something gets misaligned manually)
     Mod+Alt+R { spawn-sh "~/.local/bin/niri-sidebar reorder"; }
