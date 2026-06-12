@@ -1,4 +1,4 @@
-use crate::config::{Geometry, Margins};
+use crate::config::{Geometry, Margins, OverflowStrategy};
 use crate::{Config, NiriClient};
 use anyhow::Result;
 use niri_ipc::{Action, Response, Window, WindowLayout, Workspace};
@@ -87,6 +87,7 @@ pub fn mock_config() -> Config {
             width: 300,
             height: 200,
             gap: 10,
+            overflow: OverflowStrategy::Scroll,
         },
         margins: Margins {
             top: 50,

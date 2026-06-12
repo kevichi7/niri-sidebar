@@ -135,6 +135,8 @@ width = 400
 height = 335
 # Gap between windows in the stack
 gap = 10
+# What to do if the stack is taller/wider than the screen: "scroll" or "shrink"
+overflow = "scroll"
 
 [margins]
 # Margins are default to 0 if left out

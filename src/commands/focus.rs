@@ -48,6 +48,7 @@ pub fn focus<C: NiriClient>(ctx: &mut Ctx<C>, direction: Direction) -> Result<()
 
     if let Some(id) = sidebar_ids.get(next_index) {
         let _ = ctx.socket.send_action(Action::FocusWindow { id: *id });
+        crate::commands::reorder(ctx)?;
     }
 
     Ok(())

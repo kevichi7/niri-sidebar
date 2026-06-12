@@ -98,19 +98,29 @@ pub fn process_close<C: NiriClient>(ctx: &mut Ctx<C>, closed_id: u64) -> Result<
 }
 
 pub fn process_focus<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
+    let focused_sidebar_id = ctx.socket.get_active_window().ok().and_then(|focused| {
+        ctx.state
+            .windows
+            .iter()
+            .any(|w| w.id == focused.id)
+            .then_some(focused.id)
+    });
+
     if ctx.state.maximize_focus_mode
-        && let Ok(focused) = ctx.socket.get_active_window()
-        && ctx.state.windows.iter().any(|w| w.id == focused.id)
-        && ctx.state.maximized_window_id != Some(focused.id)
+        && let Some(focused_id) = focused_sidebar_id
+        && ctx.state.maximized_window_id != Some(focused_id)
     {
-        ctx.state.maximized_window_id = Some(focused.id);
+        ctx.state.maximized_window_id = Some(focused_id);
         save_state(&ctx.state, &ctx.cache_dir)?;
     }
 
     reorder(ctx)?;
     // Some apps (e.g. Telegram) may apply resize asynchronously.
     // A second reorder pass helps settle stacking coordinates after size changes.
-    if ctx.state.maximized_window_id.is_some() {
+    let should_settle_maximize = ctx.state.maximize_focus_mode
+        && focused_sidebar_id.is_some()
+        && focused_sidebar_id == ctx.state.maximized_window_id;
+    if should_settle_maximize {
         reorder(ctx)?;
     }
     Ok(())
@@ -382,6 +392,57 @@ mod tests {
 
         process_focus(&mut ctx).expect("process_focus failed");
         assert_eq!(ctx.state.maximized_window_id, Some(10));
+    }
+
+    #[test]
+    fn test_process_focus_does_not_double_reorder_for_maximized_window_on_other_workspace() {
+        let temp_dir = tempdir().unwrap();
+
+        let focused = mock_window(10, true, true, 1, Some((1.0, 2.0)));
+        let other_workspace = mock_window(20, false, true, 2, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![focused, other_workspace]);
+
+        let mut state = AppState {
+            maximized_window_id: Some(20),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 10,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 20,
+            width: 100,
+            height: 100,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: Config::default(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        process_focus(&mut ctx).expect("process_focus failed");
+
+        let move_count = ctx
+            .socket
+            .sent_actions
+            .iter()
+            .filter(|a| matches!(a, Action::MoveFloatingWindow { id: Some(10), .. }))
+            .count();
+        assert_eq!(move_count, 1);
+        assert!(
+            !ctx.socket
+                .sent_actions
+                .iter()
+                .any(|a| matches!(a, Action::SetWindowHeight { id: Some(10), .. }))
+        );
     }
 
     #[test]

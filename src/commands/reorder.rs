@@ -1,5 +1,5 @@
 use crate::commands::maximize::restore_sidebar_window_sizes;
-use crate::config::SidebarPosition;
+use crate::config::{OverflowStrategy, SidebarPosition};
 use crate::niri::NiriClient;
 use crate::state::save_state;
 use crate::window_rules::{resolve_rule_focus_peek, resolve_rule_peek, resolve_window_size};
@@ -144,6 +144,150 @@ fn apply_maximize_sizes(
     }
 }
 
+fn is_vertical(position: SidebarPosition) -> bool {
+    matches!(position, SidebarPosition::Left | SidebarPosition::Right)
+}
+
+fn stack_axis_size(position: SidebarPosition, dims: WindowTarget) -> i32 {
+    if is_vertical(position) {
+        dims.height
+    } else {
+        dims.width
+    }
+}
+
+fn viewport_size(
+    position: SidebarPosition,
+    display: (i32, i32),
+    margins: &crate::config::Margins,
+) -> i32 {
+    if is_vertical(position) {
+        display.1 - margins.top - margins.bottom
+    } else {
+        display.0 - margins.left - margins.right
+    }
+    .max(0)
+}
+
+fn stack_length(position: SidebarPosition, dims: &[WindowTarget], gap: i32) -> i32 {
+    if dims.is_empty() {
+        return 0;
+    }
+
+    let windows_total: i32 = dims.iter().map(|dim| stack_axis_size(position, *dim)).sum();
+    windows_total + gap * (dims.len().saturating_sub(1) as i32)
+}
+
+fn stack_offset_before(
+    position: SidebarPosition,
+    dims: &[WindowTarget],
+    gap: i32,
+    index: usize,
+) -> i32 {
+    dims.iter()
+        .take(index)
+        .map(|dim| stack_axis_size(position, *dim) + gap)
+        .sum()
+}
+
+fn set_stack_axis_size(position: SidebarPosition, dims: &mut WindowTarget, size: i32) {
+    if is_vertical(position) {
+        dims.height = size;
+    } else {
+        dims.width = size;
+    }
+}
+
+fn shrink_to_viewport(
+    position: SidebarPosition,
+    dims: &mut [WindowTarget],
+    viewport: i32,
+    gap: i32,
+) {
+    if dims.is_empty() {
+        return;
+    }
+
+    let gaps_total = gap * (dims.len().saturating_sub(1) as i32);
+    let available = viewport - gaps_total;
+    let current_total: i32 = dims.iter().map(|dim| stack_axis_size(position, *dim)).sum();
+
+    if available <= 0 || current_total <= available {
+        return;
+    }
+
+    if available < dims.len() as i32 {
+        for dim in dims {
+            set_stack_axis_size(position, dim, 1);
+        }
+        return;
+    }
+
+    let mut sizes: Vec<i32> = dims
+        .iter()
+        .map(|dim| ((stack_axis_size(position, *dim) * available) / current_total).max(1))
+        .collect();
+
+    while sizes.iter().sum::<i32>() > available {
+        if let Some(size) = sizes.iter_mut().rev().find(|size| **size > 1) {
+            *size -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut total = sizes.iter().sum::<i32>();
+    while total < available {
+        for size in sizes.iter_mut() {
+            if total >= available {
+                break;
+            }
+            *size += 1;
+            total += 1;
+        }
+    }
+
+    for (dim, size) in dims.iter_mut().zip(sizes) {
+        set_stack_axis_size(position, dim, size);
+    }
+}
+
+fn resolve_scroll_offset<C: NiriClient>(
+    ctx: &Ctx<C>,
+    position: SidebarPosition,
+    dims: &[WindowTarget],
+    sidebar_windows: &[&Window],
+    viewport: i32,
+    gap: i32,
+) -> i32 {
+    let max_scroll = (stack_length(position, dims, gap) - viewport).max(0);
+    if max_scroll == 0 {
+        return 0;
+    }
+
+    let mut scroll_offset = ctx.state.scroll_offset.clamp(0, max_scroll);
+    let Some(focused_index) = sidebar_windows.iter().position(|w| w.is_focused) else {
+        return scroll_offset;
+    };
+
+    let before = stack_offset_before(position, dims, gap, focused_index);
+    let size = stack_axis_size(position, dims[focused_index]);
+    let min_visible_offset = (before + size - viewport).clamp(0, max_scroll);
+    let max_visible_offset = before.clamp(0, max_scroll);
+
+    if min_visible_offset > max_visible_offset {
+        min_visible_offset
+    } else {
+        if scroll_offset < min_visible_offset {
+            scroll_offset = min_visible_offset;
+        }
+        if scroll_offset > max_visible_offset {
+            scroll_offset = max_visible_offset;
+        }
+        scroll_offset
+    }
+}
+
 pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
     let (display_w, display_h) = ctx.socket.get_screen_dimensions()?;
     let current_ws = ctx.socket.get_active_workspace()?.id;
@@ -203,6 +347,10 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
         .map(|window| resolve_dimensions(window, ctx))
         .collect();
     let ordered_ids: Vec<u64> = sidebar_windows.iter().map(|window| window.id).collect();
+    let maximized_in_current_layout = ctx
+        .state
+        .maximized_window_id
+        .is_some_and(|id| ordered_ids.contains(&id));
 
     apply_maximize_sizes(
         position,
@@ -213,6 +361,19 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
         &ctx.config.margins,
         gap,
     );
+    let viewport = viewport_size(position, (display_w, display_h), &ctx.config.margins);
+    if ctx.config.geometry.overflow == OverflowStrategy::Shrink {
+        shrink_to_viewport(position, &mut dims, viewport, gap);
+    }
+    let scroll_offset = if ctx.config.geometry.overflow == OverflowStrategy::Scroll {
+        resolve_scroll_offset(ctx, position, &dims, &sidebar_windows, viewport, gap)
+    } else {
+        0
+    };
+    if ctx.state.scroll_offset != scroll_offset {
+        ctx.state.scroll_offset = scroll_offset;
+        save_state(&ctx.state, &ctx.cache_dir)?;
+    }
     let mut current_stack_offset = 0;
 
     for (index, window) in sidebar_windows.iter().enumerate() {
@@ -228,7 +389,7 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
             resolve_rule_peek(&ctx.config.window_rule, window, ctx.config.interaction.peek)
         };
 
-        let (target_x, target_y) = calculate_coordinates(
+        let (mut target_x, mut target_y) = calculate_coordinates(
             position,
             dims,
             (display_w, display_h),
@@ -236,6 +397,14 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
             active_peek,
             ctx,
         );
+        match position {
+            SidebarPosition::Left | SidebarPosition::Right => {
+                target_y += scroll_offset;
+            }
+            SidebarPosition::Top | SidebarPosition::Bottom => {
+                target_x -= scroll_offset;
+            }
+        }
 
         match position {
             SidebarPosition::Left | SidebarPosition::Right => {
@@ -246,7 +415,7 @@ pub fn reorder<C: NiriClient>(ctx: &mut Ctx<C>) -> Result<()> {
             }
         }
 
-        if ctx.state.maximized_window_id.is_some() {
+        if maximized_in_current_layout || ctx.config.geometry.overflow == OverflowStrategy::Shrink {
             match position {
                 SidebarPosition::Left | SidebarPosition::Right => {
                     let _ = ctx.socket.send_action(Action::SetWindowHeight {
@@ -494,6 +663,55 @@ mod tests {
                 }
             )),
             "reorder should restore default size when stale maximize is cleared"
+        );
+    }
+
+    #[test]
+    fn test_maximized_window_on_other_workspace_does_not_resize_current_sidebar() {
+        let temp_dir = tempdir().unwrap();
+        let current = mock_window(1, true, true, 1, Some((1.0, 2.0)));
+        let other_ws = mock_window(2, false, true, 2, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![current, other_ws]);
+
+        let mut state = AppState {
+            maximized_window_id: Some(2),
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 2,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert!(
+            ctx.socket
+                .sent_actions
+                .iter()
+                .any(|a| matches!(a, Action::MoveFloatingWindow { id: Some(1), .. }))
+        );
+        assert!(
+            !ctx.socket
+                .sent_actions
+                .iter()
+                .any(|a| matches!(a, Action::SetWindowHeight { id: Some(1), .. }))
         );
     }
 
@@ -747,6 +965,355 @@ mod tests {
         assert!(actions.iter().any(|a| matches!(a,
             Action::MoveFloatingWindow { id: Some(1), y: PositionChange::SetFixed(y), .. }
             if *y == 620.0
+        )));
+    }
+
+    #[test]
+    fn test_vertical_overflow_scrolls_focused_window_into_view() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = Vec::new();
+        let mut state = AppState::default();
+
+        for id in 1..=6 {
+            windows.push(mock_window(id, id == 6, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 270);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(6),
+                y: PositionChange::SetFixed(50.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_vertical_overflow_shrinks_to_fit() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = Vec::new();
+        let mut state = AppState {
+            scroll_offset: 270,
+            ..Default::default()
+        };
+
+        for id in 1..=6 {
+            windows.push(mock_window(id, id == 6, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut config = mock_config();
+        config.geometry.overflow = OverflowStrategy::Shrink;
+
+        let mut ctx = Ctx {
+            state,
+            config,
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 0);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowHeight {
+                id: Some(1),
+                change: niri_ipc::SizeChange::SetFixed(155)
+            }
+        )));
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(6),
+                y: PositionChange::SetFixed(50.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_scroll_resets_when_stack_fits() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, true, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![w1]);
+
+        let mut state = AppState {
+            scroll_offset: 100,
+            ..Default::default()
+        };
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 0);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(1),
+                y: PositionChange::SetFixed(830.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_scroll_is_remembered_when_focus_leaves_sidebar() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = vec![mock_window(99, true, false, 1, None)];
+        let mut state = AppState {
+            scroll_offset: 200,
+            ..Default::default()
+        };
+
+        for id in 1..=6 {
+            windows.push(mock_window(id, false, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 200);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(1),
+                y: PositionChange::SetFixed(1030.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_horizontal_overflow_scrolls_focused_window_into_view() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = Vec::new();
+        let mut state = AppState::default();
+
+        for id in 1..=7 {
+            windows.push(mock_window(id, id == 7, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut config = mock_config();
+        config.interaction.position = SidebarPosition::Bottom;
+        config.geometry.width = 300;
+        config.geometry.gap = 10;
+
+        let mut ctx = Ctx {
+            state,
+            config,
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 270);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(7),
+                x: PositionChange::SetFixed(1600.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_horizontal_overflow_shrinks_to_fit() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = Vec::new();
+        let mut state = AppState::default();
+
+        for id in 1..=7 {
+            windows.push(mock_window(id, id == 7, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut config = mock_config();
+        config.interaction.position = SidebarPosition::Bottom;
+        config.geometry.width = 300;
+        config.geometry.gap = 10;
+        config.geometry.overflow = OverflowStrategy::Shrink;
+
+        let mut ctx = Ctx {
+            state,
+            config,
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 0);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::SetWindowWidth {
+                id: Some(7),
+                change: niri_ipc::SizeChange::SetFixed(261)
+            }
+        )));
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(7),
+                x: PositionChange::SetFixed(1639.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_oversized_focused_window_aligns_to_viewport_start() {
+        let temp_dir = tempdir().unwrap();
+        let w1 = mock_window(1, true, true, 1, Some((1.0, 2.0)));
+        let w2 = mock_window(2, false, true, 1, Some((1.0, 2.0)));
+        let mock = MockNiri::new(vec![w1, w2]);
+
+        let mut config = mock_config();
+        config.geometry.height = 1200;
+
+        let mut state = AppState::default();
+        state.windows.push(WindowState {
+            id: 1,
+            width: 300,
+            height: 1200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+        state.windows.push(WindowState {
+            id: 2,
+            width: 300,
+            height: 1200,
+            is_floating: true,
+            position: Some((1.0, 2.0)),
+        });
+
+        let mut ctx = Ctx {
+            state,
+            config,
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 220);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(1),
+                y: PositionChange::SetFixed(50.0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_flipped_overflow_keeps_focused_window_visible() {
+        let temp_dir = tempdir().unwrap();
+        let mut windows = Vec::new();
+        let mut state = AppState {
+            is_flipped: true,
+            ..Default::default()
+        };
+
+        for id in 1..=6 {
+            windows.push(mock_window(id, id == 1, true, 1, Some((1.0, 2.0))));
+            state.windows.push(WindowState {
+                id,
+                width: 300,
+                height: 200,
+                is_floating: true,
+                position: Some((1.0, 2.0)),
+            });
+        }
+
+        let mock = MockNiri::new(windows);
+        let mut ctx = Ctx {
+            state,
+            config: mock_config(),
+            socket: mock,
+            cache_dir: temp_dir.path().to_path_buf(),
+        };
+
+        reorder(&mut ctx).expect("Reorder failed");
+
+        assert_eq!(ctx.state.scroll_offset, 270);
+        assert!(ctx.socket.sent_actions.iter().any(|a| matches!(
+            a,
+            Action::MoveFloatingWindow {
+                id: Some(1),
+                y: PositionChange::SetFixed(50.0),
+                ..
+            }
         )));
     }
 

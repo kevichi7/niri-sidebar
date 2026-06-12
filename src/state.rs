@@ -16,6 +16,8 @@ pub struct AppState {
     pub is_hidden: bool,
     #[serde(default)]
     pub is_flipped: bool,
+    #[serde(default)]
+    pub scroll_offset: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -86,6 +88,7 @@ mod tests {
             maximize_focus_mode: true,
             is_hidden: true,
             is_flipped: true,
+            scroll_offset: 42,
         };
 
         save_state(&original_state, temp_dir.path()).expect("Failed to save state");

@@ -15,6 +15,13 @@ pub enum SidebarPosition {
     Bottom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverflowStrategy {
+    Scroll,
+    Shrink,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub geometry: Geometry,
@@ -29,6 +36,8 @@ pub struct Geometry {
     pub width: i32,
     pub height: i32,
     pub gap: i32,
+    #[serde(default = "default_overflow")]
+    pub overflow: OverflowStrategy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +74,10 @@ fn default_sticky() -> bool {
 
 fn default_position() -> SidebarPosition {
     SidebarPosition::Right
+}
+
+fn default_overflow() -> OverflowStrategy {
+    OverflowStrategy::Scroll
 }
 
 fn default_margin() -> i32 {
@@ -131,4 +144,29 @@ pub fn init_config() -> Result<()> {
     fs::write(&path, DEFAULT_CONFIG_STR)?;
     println!("Default config written to {:?}", path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_missing_overflow_defaults_to_scroll() {
+        let config: Config = toml::from_str(
+            r#"
+            [geometry]
+            width = 400
+            height = 335
+            gap = 10
+
+            [margins]
+
+            [interaction]
+            peek = 10
+        "#,
+        )
+        .expect("config without overflow should parse");
+
+        assert_eq!(config.geometry.overflow, OverflowStrategy::Scroll);
+    }
 }
